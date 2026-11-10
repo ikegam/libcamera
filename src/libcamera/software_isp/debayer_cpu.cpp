@@ -42,13 +42,15 @@ public:
 	DebayerCpuThread(DebayerCpu *debayer, unsigned int threadIndex,
 			 bool enableInputMemcpy);
 
-	void configure(unsigned int yStart, unsigned int yEnd);
+	void configure(unsigned int yStart, unsigned int yEnd,
+		       unsigned int statsStart, unsigned int statsEnd);
 	void process(uint32_t frame, const uint8_t *src, uint8_t *dst);
 
 private:
 	void setupInputMemcpy(const uint8_t *linePointers[]);
 	void shiftLinePointers(const uint8_t *linePointers[], const uint8_t *src);
 	void memcpyNextLine(const uint8_t *linePointers[]);
+	bool isStatsLine(unsigned int y) const { return y >= statsStart_ && y < statsEnd_; }
 	void process2(uint32_t frame, const uint8_t *src, uint8_t *dst);
 	void process4(uint32_t frame, const uint8_t *src, uint8_t *dst);
 
@@ -59,6 +61,8 @@ private:
 	unsigned int threadIndex_;
 	unsigned int yStart_;
 	unsigned int yEnd_;
+	unsigned int statsStart_;
+	unsigned int statsEnd_;
 	unsigned int lineBufferLength_;
 	unsigned int lineBufferPadding_;
 	unsigned int lineBufferIndex_;
@@ -703,10 +707,11 @@ int DebayerCpu::configure(const StreamConfiguration &inputCfg,
 	unsigned int i;
 
 	for (i = 0; i < (threads_.size() - 1); i++) {
-		threads_[i]->configure(yStart, yStart + linesPerThread);
+		threads_[i]->configure(yStart, yStart + linesPerThread,
+				       yStart, yStart + linesPerThread);
 		yStart += linesPerThread;
 	}
-	threads_[i]->configure(yStart, window_.height);
+	threads_[i]->configure(yStart, window_.height, yStart, window_.height);
 
 	return 0;
 }
@@ -715,15 +720,23 @@ int DebayerCpu::configure(const StreamConfiguration &inputCfg,
  * \brief Configure thread to process a specific part of the image
  * \param[in] yStart y coordinate of first line to process
  * \param[in] yEnd y coordinate of the line at which to stop processing
+ * \param[in] statsStart y coordinate of first line to pass to the stats
+ * \param[in] statsEnd y coordinate of the line at which to stop passing
+ * lines to the stats
  *
- * Configure the thread to process lines from yStart to yEnd - 1.
+ * Configure the thread to process lines from yStart to yEnd - 1, and to pass
+ * those of them from statsStart to statsEnd - 1 to the stats. This lets
+ * threads with overlapping line ranges pass every line to the stats once.
  */
-void DebayerCpuThread::configure(unsigned int yStart, unsigned int yEnd)
+void DebayerCpuThread::configure(unsigned int yStart, unsigned int yEnd,
+				 unsigned int statsStart, unsigned int statsEnd)
 {
 	Debayer::DebayerInputConfig &inputConfig = debayer_->inputConfig_;
 
 	yStart_ = yStart;
 	yEnd_ = yEnd;
+	statsStart_ = statsStart;
+	statsEnd_ = statsEnd;
 
 	/* pad with patternSize.Width on both left and right side */
 	lineBufferPadding_ = inputConfig.patternSize.width * inputConfig.bpp / 8;
@@ -876,7 +889,8 @@ void DebayerCpuThread::process2(uint32_t frame, const uint8_t *src, uint8_t *dst
 	for (unsigned int y = yStart_; y < yEnd; y += 2) {
 		shiftLinePointers(linePointers, src);
 		memcpyNextLine(linePointers);
-		debayer_->stats_->processLine0(frame, y, linePointers, threadIndex_);
+		if (isStatsLine(y))
+			debayer_->stats_->processLine0(frame, y, linePointers, threadIndex_);
 		debayer_->debayer0(dst, linePointers);
 		src += inputStride;
 		dst += outputStride;
@@ -891,7 +905,8 @@ void DebayerCpuThread::process2(uint32_t frame, const uint8_t *src, uint8_t *dst
 	if (window.y == 0 && yEnd_ == window.height) {
 		shiftLinePointers(linePointers, src);
 		memcpyNextLine(linePointers);
-		debayer_->stats_->processLine0(frame, yEnd, linePointers, threadIndex_);
+		if (isStatsLine(yEnd))
+			debayer_->stats_->processLine0(frame, yEnd, linePointers, threadIndex_);
 		debayer_->debayer0(dst, linePointers);
 		src += inputStride;
 		dst += outputStride;
@@ -932,7 +947,8 @@ void DebayerCpuThread::process4(uint32_t frame, const uint8_t *src, uint8_t *dst
 	for (unsigned int y = yStart_; y < yEnd_; y += 4) {
 		shiftLinePointers(linePointers, src);
 		memcpyNextLine(linePointers);
-		debayer_->stats_->processLine0(frame, y, linePointers, threadIndex_);
+		if (isStatsLine(y))
+			debayer_->stats_->processLine0(frame, y, linePointers, threadIndex_);
 		debayer_->debayer0(dst, linePointers);
 		src += inputStride;
 		dst += outputStride;
@@ -945,7 +961,8 @@ void DebayerCpuThread::process4(uint32_t frame, const uint8_t *src, uint8_t *dst
 
 		shiftLinePointers(linePointers, src);
 		memcpyNextLine(linePointers);
-		debayer_->stats_->processLine2(frame, y, linePointers, threadIndex_);
+		if (isStatsLine(y))
+			debayer_->stats_->processLine2(frame, y, linePointers, threadIndex_);
 		debayer_->debayer2(dst, linePointers);
 		src += inputStride;
 		dst += outputStride;
