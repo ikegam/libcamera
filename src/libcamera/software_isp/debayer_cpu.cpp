@@ -129,6 +129,9 @@ DebayerCpu::DebayerCpu(std::unique_ptr<SwStatsCpu> stats, const CameraManager &c
 	unsigned int threadCount =
 		configuration.option<unsigned int>({ "software_isp", "threads" }).value_or(kDefaultThreads);
 	threadCount = std::clamp(threadCount, kMinThreads, kMaxThreads);
+
+	downscaleEnabled_ =
+		configuration.option<bool>({ "software_isp", "downscale" }).value_or(true);
 	threads_.resize(threadCount);
 
 	for (unsigned int i = 0; i < threads_.size(); i++)
@@ -701,13 +704,14 @@ int DebayerCpu::configure(const StreamConfiguration &inputCfg,
 	/*
 	 * Debayer the largest centred input area with the output aspect ratio
 	 * and downscale it, rather than cropping the centre of the input,
-	 * unless that gains 2% of field of view or less. Downscaling is
+	 * unless that gains 2% of field of view or less or the configuration
+	 * file disables it. Downscaling is
 	 * implemented for 2-line Bayer patterns (process2()) only.
 	 */
 	const Size &outSize = outputCfg.size;
 	Size srcSize = outSize;
 
-	if (inputConfig_.patternSize.height == 2) {
+	if (downscaleEnabled_ && inputConfig_.patternSize.height == 2) {
 		const Size &max = outSizeRange.max;
 		Size fit = max.boundedToAspectRatio(outSize)
 			       .alignedDownTo(inputConfig_.patternSize.width,
