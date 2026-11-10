@@ -129,6 +129,17 @@ private:
 	void updateGammaTable(const DebayerParams &params);
 	void updateLookupTables(const DebayerParams &params);
 
+	/*
+	 * Box filter tap: input sample i adds w0 / 256 of its value to output
+	 * sample out and w1 / 256 to output sample out + 1.
+	 */
+	struct ScaleTap {
+		uint16_t out;
+		uint16_t w0;
+		uint16_t w1;
+	};
+	static std::vector<ScaleTap> scaleTaps(unsigned int srcLen, unsigned int dstLen);
+
 	static constexpr unsigned int kRGBLookupSize = 256;
 	static constexpr unsigned int kGammaLookupSize = 1024;
 	struct CcmColumn {
@@ -155,6 +166,12 @@ private:
 	debayerFn debayer3_;
 	Rectangle window_;
 	std::unique_ptr<SwStatsCpu> stats_;
+	/* Downscaling of window_ to outputSize_, if they differ */
+	bool scaling_;
+	Size outputSize_;
+	unsigned int outputBpp_;
+	std::vector<ScaleTap> hTaps_;
+	std::vector<ScaleTap> vTaps_;
 	unsigned int xShift_; /* Offset of 0/1 applied to window_.x */
 
 	static constexpr unsigned int kMinThreads = 1;
