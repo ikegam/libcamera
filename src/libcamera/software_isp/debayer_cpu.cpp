@@ -734,7 +734,7 @@ int DebayerCpu::configure(const StreamConfiguration &inputCfg,
 	outputSize_ = outSize;
 	outputBpp_ = PixelFormatInfo::info(outputCfg.pixelFormat).bitsPerPixel / 8;
 	if (scaling_) {
-		hTaps_ = scaleTaps(srcSize.width, outSize.width);
+		setupHScale(srcSize.width, outSize.width);
 		vTaps_ = scaleTaps(srcSize.height, outSize.height);
 	}
 
@@ -810,6 +810,43 @@ DebayerCpu::scaleTaps(unsigned int srcLen, unsigned int dstLen)
 	return taps;
 }
 
+/*
+ * Turn the horizontal taps around: walking the taps per input pixel needs a
+ * data dependent branch per pixel, gathering the inputs per output pixel does
+ * not.
+ */
+void DebayerCpu::setupHScale(unsigned int srcLen, unsigned int dstLen)
+{
+	std::vector<ScaleTap> taps = scaleTaps(srcLen, dstLen);
+	std::vector<unsigned int> first(dstLen, srcLen), last(dstLen, 0);
+
+	for (unsigned int i = 0; i < srcLen; i++) {
+		for (unsigned int x = taps[i].out; x <= taps[i].out + 1u && x < dstLen; x++) {
+			if (x == taps[i].out || taps[i].w1) {
+				first[x] = std::min(first[x], i);
+				last[x] = std::max(last[x], i);
+			}
+		}
+	}
+
+	hTaps_ = 0;
+	for (unsigned int x = 0; x < dstLen; x++)
+		hTaps_ = std::max(hTaps_, last[x] - first[x] + 1);
+
+	/* Keep all taps inside the line, the extra ones get weight 0 */
+	hStart_.resize(dstLen);
+	for (unsigned int x = 0; x < dstLen; x++)
+		hStart_[x] = std::min(first[x], srcLen - hTaps_);
+
+	hWeights_.assign(dstLen * hTaps_, 0);
+	for (unsigned int i = 0; i < srcLen; i++) {
+		const ScaleTap &t = taps[i];
+		hWeights_[t.out * hTaps_ + i - hStart_[t.out]] = t.w0;
+		if (t.w1)
+			hWeights_[(t.out + 1) * hTaps_ + i - hStart_[t.out + 1]] = t.w1;
+	}
+}
+
 /**
  * \brief Configure thread to process a specific part of the image
  * \param[in] yStart y coordinate of first line to process
@@ -855,8 +892,7 @@ void DebayerCpuThread::configureOutput(unsigned int outStart, unsigned int outEn
 	outStart_ = outStart;
 	outEnd_ = outEnd;
 	scaleIn_.resize(debayer_->window_.width * debayer_->outputBpp_);
-	/* One extra pixel for the (zero) w1 of the last tap */
-	hAcc_.resize(width + debayer_->outputBpp_);
+	hAcc_.resize(width);
 	vAcc_[0].resize(width);
 	vAcc_[1].resize(width);
 }
@@ -890,6 +926,41 @@ void DebayerCpuThread::writeScaledLine(uint8_t *dst)
 	curOut_++;
 }
 
+template<unsigned int bpp, unsigned int kTaps>
+static void scaleLineH(const uint8_t *src, uint32_t *dst, unsigned int width,
+		       unsigned int taps, const uint32_t *start, const uint16_t *weights)
+{
+	const unsigned int n = kTaps ? kTaps : taps;
+
+	for (unsigned int x = 0; x < width; x++, dst += bpp, weights += n) {
+		const uint8_t *s = src + start[x] * bpp;
+		uint32_t acc[bpp] = {};
+
+		for (unsigned int i = 0; i < n; i++)
+			for (unsigned int c = 0; c < bpp; c++)
+				acc[c] += s[i * bpp + c] * weights[i];
+		for (unsigned int c = 0; c < bpp; c++)
+			dst[c] = acc[c];
+	}
+}
+
+/* Fixed tap counts let the compiler unroll the common 1.5x - 3x ratios */
+template<unsigned int bpp>
+static void scaleLineH(const uint8_t *src, uint32_t *dst, unsigned int width,
+		       unsigned int taps, const uint32_t *start, const uint16_t *weights)
+{
+	switch (taps) {
+	case 2:
+		return scaleLineH<bpp, 2>(src, dst, width, taps, start, weights);
+	case 3:
+		return scaleLineH<bpp, 3>(src, dst, width, taps, start, weights);
+	case 4:
+		return scaleLineH<bpp, 4>(src, dst, width, taps, start, weights);
+	default:
+		return scaleLineH<bpp, 0>(src, dst, width, taps, start, weights);
+	}
+}
+
 /* Add the debayered window line y in scaleIn_ to the output lines it covers */
 void DebayerCpuThread::scaleLine(unsigned int y, uint8_t *dst)
 {
@@ -899,15 +970,11 @@ void DebayerCpuThread::scaleLine(unsigned int y, uint8_t *dst)
 	if (vt.out >= outEnd_ || vt.out + (vt.w1 ? 1u : 0u) < outStart_)
 		return;
 
-	std::fill(hAcc_.begin(), hAcc_.end(), 0);
-	const uint8_t *in = scaleIn_.data();
-	for (const DebayerCpu::ScaleTap &t : debayer_->hTaps_) {
-		uint32_t *acc = &hAcc_[t.out * bpp];
-		for (unsigned int c = 0; c < bpp; c++, in++) {
-			acc[c] += *in * t.w0;
-			acc[bpp + c] += *in * t.w1;
-		}
-	}
+	(bpp == 4 ? scaleLineH<4> : scaleLineH<3>)(scaleIn_.data(), hAcc_.data(),
+						   debayer_->outputSize_.width,
+						   debayer_->hTaps_,
+						   debayer_->hStart_.data(),
+						   debayer_->hWeights_.data());
 
 	while (vt.out > curOut_)
 		writeScaledLine(dst);

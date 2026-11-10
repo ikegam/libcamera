@@ -139,6 +139,7 @@ private:
 		uint16_t w1;
 	};
 	static std::vector<ScaleTap> scaleTaps(unsigned int srcLen, unsigned int dstLen);
+	void setupHScale(unsigned int srcLen, unsigned int dstLen);
 
 	static constexpr unsigned int kRGBLookupSize = 256;
 	static constexpr unsigned int kGammaLookupSize = 1024;
@@ -171,7 +172,13 @@ private:
 	bool scaling_;
 	Size outputSize_;
 	unsigned int outputBpp_;
-	std::vector<ScaleTap> hTaps_;
+	/*
+	 * Horizontal filter, output-major: output pixel x is the sum of hTaps_
+	 * input pixels from hStart_[x] on, weighted by hWeights_[x * hTaps_ + i].
+	 */
+	unsigned int hTaps_;
+	std::vector<uint32_t> hStart_;
+	std::vector<uint16_t> hWeights_;
 	std::vector<ScaleTap> vTaps_;
 	unsigned int xShift_; /* Offset of 0/1 applied to window_.x */
 
