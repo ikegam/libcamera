@@ -48,6 +48,7 @@ file structure:
             software_isp: # true/false
     software_isp:
       copy_input_buffer: # true/false
+      downscale: # true/false
       measure:
         skip: # non-negative integer, frames to skip initially
         number: # non-negative integer, frames to measure
@@ -163,6 +164,15 @@ software_isp.copy_input_buffer
    processing on platforms with non-cached buffers. It can be set to
    false on platforms with cached buffers to avoid an unnecessary
    overhead.
+
+   Example value: ``false``
+
+software_isp.downscale
+   Define whether the CPU software ISP downscales the largest centred area
+   of the input with the output aspect ratio when the output is smaller
+   than the input (the default), or crops the centre of the input at the
+   output size. Cropping costs less CPU time, downscaling keeps the field
+   of view of the sensor.
 
    Example value: ``false``
 

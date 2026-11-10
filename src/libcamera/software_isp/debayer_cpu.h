@@ -167,6 +167,7 @@ private:
 	Rectangle window_;
 	std::unique_ptr<SwStatsCpu> stats_;
 	/* Downscaling of window_ to outputSize_, if they differ */
+	bool downscaleEnabled_;
 	bool scaling_;
 	Size outputSize_;
 	unsigned int outputBpp_;
